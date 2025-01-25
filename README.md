@@ -3,15 +3,13 @@ A DIY logic analyzer project built with STM32 microcontroller, designed to captu
 
 ## Key Features:
 2-channel data capture using STM32 GPIO.
-Real-time signal visualization with time-based plotting on MATLAB UI.
-Communication via USART between STM32 and PC.
+Real-time signal visualization with time-based plotting on a MATLAB UI.
+Communication via UART between STM32 and PC.
 Custom-designed probe for signal measurement.
 
-## Installation and Setup:
-Clone the repository.
-Flash the STM32 with the provided firmware.
-Connect the logic analyzer to the target device using the custom probe.
-Use the MATLAB interface to configure settings and visualize signals.
+## Hardware Requirements:
+Microcontroller: STM32F401RE
+Probe: 1kΩ, 10kΩ, and 220Ω resistors, BAT54 diodes and a 0.1uF capacitor for a single probe. Circuit diagram is given.
 
 ## Included Files:
 MATLAB UI files for data visualization.
