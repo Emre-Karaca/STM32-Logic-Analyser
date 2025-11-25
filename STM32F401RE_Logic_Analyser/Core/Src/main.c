@@ -1,4 +1,10 @@
 /* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : 
+  ******************************************************************************
+  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -11,15 +17,20 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define BUFFER_SIZE 2
+// Increase buffer size to capture more history per packet
+// 50 samples * 2 channels = 100 bytes
+#define SAMPLES_PER_PACKET 50
+#define BUFFER_SIZE (SAMPLES_PER_PACKET * 2) 
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -28,8 +39,7 @@ DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 uint8_t TxData[BUFFER_SIZE];  // Buffer to store GPIO readings
-int SentFlag = 1;
-int Counter = 0;
+volatile uint8_t SentFlag = 1; // Volatile because it's modified in ISR
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -38,6 +48,7 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -45,10 +56,10 @@ static void MX_USART2_UART_Init(void);
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-	SentFlag = 1; // Set flag to allow the next transmission
-	Counter++;
+    if (huart->Instance == USART2) {
+        SentFlag = 1; // Transmission complete, ready for next batch
+    }
 }
-
 
 /* USER CODE END 0 */
 
@@ -58,8 +69,8 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -68,12 +79,14 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -82,41 +95,55 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  char test_message[] = "Hello, UART!\r\n"; // The test message
-  HAL_UART_Transmit(&huart2, (uint8_t *)test_message, strlen(test_message), HAL_MAX_DELAY);
+  // Optional: Send a startup message
+  // char test_message[] = "STM32 Logic Analyzer Ready\r\n";
+  // HAL_UART_Transmit(&huart2, (uint8_t *)test_message, strlen(test_message), HAL_MAX_DELAY);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while(1)
+  while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  for (uint32_t i = 0; i < BUFFER_SIZE / 2; i++) {
-	          TxData[i] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_SET ? '1' : '0';
+      
+      // 1. Capture Phase: Fill the buffer as fast as possible
+      for (int i = 0; i < SAMPLES_PER_PACKET; i++) {
+          // OPTIMIZATION: Read the entire Input Data Register (IDR) once.
+          // This ensures PC0 and PC1 are sampled at the EXACT same moment.
+          uint32_t port_state = GPIOC->IDR;
 
-	          // Control LED based on GPIO state (for PC0)
-	          if (TxData[i] == '1') {
-	              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-	          } else {
-	              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-	          }
-	          HAL_Delay(10);  // Add delay for sampling
-	      }
+          // Extract PC0 (Channel 1)
+          // We use direct bitwise logic instead of HAL for speed
+          TxData[i * 2]     = (port_state & GPIO_PIN_0) ? '1' : '0';
+          
+          // Extract PC1 (Channel 2)
+          TxData[i * 2 + 1] = (port_state & GPIO_PIN_1) ? '1' : '0';
 
-	      // Second loop to check GPIO PC1
-	      for (uint32_t i = BUFFER_SIZE / 2; i < BUFFER_SIZE; i++) {
-	          TxData[i] = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == GPIO_PIN_SET ? '1' : '0';
-	          HAL_Delay(10);  // Add delay for sampling
-	      }
+          // Sampling Delay
+          // Remove HAL_Delay for max speed, or add a small delay for controlled sampling.
+          // For a Logic Analyzer, you usually want max speed. 
+          // If 115200 baud is too slow to keep up, add: HAL_Delay(1);
+          HAL_Delay(1); 
+      }
 
-	      // Transmit the buffer via UART
-	      HAL_UART_Transmit_DMA(&huart2, TxData, BUFFER_SIZE);
-	      HAL_Delay(100);
+      // 2. Transmission Phase: Send data if previous transfer is done
+      if (SentFlag) {
+          SentFlag = 0; // Clear flag, wait for interrupt to set it back
+          
+          // Visual Indicator: Toggle LED based on the last sample of PC0
+          // We moved this outside the capture loop to prevent slowing down sampling
+          HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, (TxData[BUFFER_SIZE-2] == '1') ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+          // Transmit the entire buffer via DMA
+          HAL_UART_Transmit_DMA(&huart2, TxData, BUFFER_SIZE);
+      }
+      
+      // If SentFlag is still 0, the CPU will just loop back and re-capture 
+      // fresh data while waiting for UART to finish.
   }
-
   /* USER CODE END 3 */
 }
 
@@ -175,12 +202,14 @@ static void MX_USART2_UART_Init(void)
 {
 
   /* USER CODE BEGIN USART2_Init 0 */
+
   /* USER CODE END USART2_Init 0 */
 
   /* USER CODE BEGIN USART2_Init 1 */
+
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 115200; // RECOMMENDATION: Increase to 460800 or 921600 for faster capture
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -192,6 +221,7 @@ static void MX_USART2_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
+
   /* USER CODE END USART2_Init 2 */
 
 }
@@ -239,9 +269,11 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : Channel_1_Pin Channel_2_Pin */
+  // Optimized for Logic Analyzer: No Pull to detect floating, HIGH speed
   GPIO_InitStruct.Pin = Channel_1_Pin|Channel_2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Pull = GPIO_NOPULL; 
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH; // Set to HIGH speed for better signal integrity
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : LD2_Pin */
@@ -266,13 +298,18 @@ static void MX_GPIO_Init(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
   /* USER CODE END Error_Handler_Debug */
 }
 
 #ifdef  USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
+  * where the assert_param error has occurred.
   * @param  file: pointer to the source file name
   * @param  line: assert_param error line source number
   * @retval None
@@ -280,6 +317,8 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
