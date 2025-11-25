@@ -1,111 +1,104 @@
-% Check available serial ports
-availablePorts = serialportlist("available");
-disp('Available COM Ports:');
-disp(availablePorts);
+%% STM32 Logic Analyzer Interface
+% Description: Reads 2-channel binary data from STM32 via UART
 
-% Specify the COM port to test, change port and buad rate according to yours
-serialPort = 'COM6';
-baudRate = 115200;
+clear; clc; close all;
 
-% Create a serial port object
-s = serialport(serialPort, baudRate);
+%% Configuration
+SERIAL_PORT = 'COM6'; % Check device manager if this changes
+BAUD_RATE   = 115200;
+WINDOW_SEC  = 3.0;    % How many seconds of data to show on screen
 
-% Initialize data storage
-pc0Data = [];
-pc1Data = []; 
-timeData = []; 
+% Print available ports just in case
+disp('Found Ports:');
+disp(serialportlist("available"));
 
-% Create a figure for plotting
-figure('Position', [100, 100, 600, 400]);
-hold on;
-
-% Create axes for plotting
-ax1 = subplot(2, 1, 1);
-title('Channel 1 (PC0)');
-ylim([-0.1 1.1]);
-xlabel('Time (s)');
-ylabel('State');
-hold(ax1, 'on');
-
-ax2 = subplot(2, 1, 2);
-title('Channel 2 (PC1)');
-ylim([-0.1 1.1]);
-xlabel('Time (s)');
-ylabel('State');
-hold(ax2, 'on');
-
-% Set the initial time
-startTime = datetime('now');
-
-% Main loop to read data
+%% Setup Connection
 try
-    disp('Starting to read data from the serial port...');
-    while true
-        % Check if there are bytes available to read
-        if s.NumBytesAvailable > 0
-            % Read available bytes
-            data = read(s, s.NumBytesAvailable, "uint8");
-            
-            % Convert the data to characters
-            dataStr = char(data');
-            
-            % Display the received data for test purposes
-            fprintf('Received: %s\n', dataStr);
-            
-            % Ensure we have enough data (2 characters)
-            if length(dataStr) >= 2
-                % Get the first character for PC0 and second character for PC1
-                pc0Char = dataStr(1); 
-                pc1Char = dataStr(2);
-                
-                % Convert characters to binary values (1 or 0)
-                pc0 = (pc0Char == '1');
-                pc1 = (pc1Char == '1');
-
-                % Store the data, time in seconds
-                currentTime = seconds(datetime('now') - startTime);
-                
-                % Append the new data to the arrays
-                timeData(end + 1) = currentTime; 
-                pc0Data(end + 1) = pc0; % Store as binary value (0 or 1)
-                pc1Data(end + 1) = pc1; % Store as binary value (0 or 1)
-
-                % Print the gathered data
-                fprintf('Time: %.2f s, PC0: %d, PC1: %d\n', currentTime, pc0, pc1);
-
-                % Clear previous plots
-                cla(ax1);
-                cla(ax2);
-                
-                % Plot the data
-                if currentTime <= 3
-                    % For the first 3 seconds, plot all data from the start
-                    plot(ax1, timeData, pc0Data, 'b'); 
-                    plot(ax2, timeData, pc1Data, 'r');
-                    % Set the x-axis to show the full range up to `currentTime`
-                    xlim(ax1, [0 3]);
-                    xlim(ax2, [0 3]);
-                else
-                    % After 3 seconds, plot only the last 3 seconds of data
-                    validIndices = timeData >= (currentTime - 3);
-                    plot(ax1, timeData(validIndices) - (currentTime - 3), pc0Data(validIndices), 'b'); % Plot PC0
-                    plot(ax2, timeData(validIndices) - (currentTime - 3), pc1Data(validIndices), 'r'); % Plot PC1
-                    % The x-axis fixed to [0 3]
-                    xlim(ax1, [0 3]);
-                    xlim(ax2, [0 3]);
-                end
-                
-                % Delay briefly to allow updates on plat
-                pause(0.01);
-            else
-                fprintf('Received data is less than 2 characters: %s\n', dataStr);
-            end
-        end
-    end
+    stm32 = serialport(SERIAL_PORT, BAUD_RATE);
+    configureTerminator(stm32, "CR/LF"); % Good practice if sending lines
+    flush(stm32); % Clear any old junk data
+    disp(['Connected to ' SERIAL_PORT]);
 catch ME
-    disp('Error occurred:');
-    disp(ME.message);
+    error(['Failed to open port. Is it busy? ' ME.message]);
 end
 
-% Automatically closes the serial port when done
-clear s; 
+%% Plot Setup
+hFig = figure('Name', 'STM32 Logic Analyzer', 'Color', 'w');
+
+% Channel 1 Setup
+subplot(2, 1, 1);
+hLine1 = plot(nan, nan, 'b', 'LineWidth', 1.5);
+title('Channel 1 (PC0)');
+ylim([-0.2 1.2]); % Give it some breathing room
+yticks([0 1]);
+ylabel('Logic Level');
+grid on;
+
+% Channel 2 Setup
+subplot(2, 1, 2);
+hLine2 = plot(nan, nan, 'r', 'LineWidth', 1.5);
+title('Channel 2 (PC1)');
+ylim([-0.2 1.2]);
+yticks([0 1]);
+xlabel('Time (s)');
+ylabel('Logic Level');
+grid on;
+
+%% Data Loop
+raw_pc0 = [];
+raw_pc1 = [];
+t_log   = [];
+
+startTime = datetime('now');
+
+disp('Capturing data... (Press Ctrl+C to stop)');
+
+while ishandle(hFig) % Runs until you close the figure window
+    
+    if stm32.NumBytesAvailable >= 2
+        % Read 2 bytes directly
+        data = read(stm32, stm32.NumBytesAvailable, "uint8");
+        charData = char(data');
+        
+        % Simple parsing - assumes stream is "1010..." or similar
+        % Iterate through received chunk in case we got a burst of data
+        for i = 1:2:length(charData)-1
+            val1 = charData(i);
+            val2 = charData(i+1);
+            
+            % Update arrays
+            t_now = seconds(datetime('now') - startTime);
+            t_log(end+1)   = t_now;
+            raw_pc0(end+1) = str2double(val1);
+            raw_pc1(end+1) = str2double(val2);
+        end
+        
+        % --- Update Plot (Scrolling) ---
+        % Only keep data within the view window to keep it fast
+        if t_now > WINDOW_SEC
+            t_start = t_now - WINDOW_SEC;
+            % Filter indices logic
+            idx = t_log > t_start;
+            
+            % Update graph data
+            set(hLine1, 'XData', t_log(idx), 'YData', raw_pc0(idx));
+            set(hLine2, 'XData', t_log(idx), 'YData', raw_pc1(idx));
+            
+            % Scroll X-Axis
+            subplot(2,1,1); xlim([t_start, t_now]);
+            subplot(2,1,2); xlim([t_start, t_now]);
+        else
+            % Static view for first few seconds
+            set(hLine1, 'XData', t_log, 'YData', raw_pc0);
+            set(hLine2, 'XData', t_log, 'YData', raw_pc1);
+            
+            subplot(2,1,1); xlim([0, WINDOW_SEC]);
+            subplot(2,1,2); xlim([0, WINDOW_SEC]);
+        end
+        
+        drawnow limitrate; % smoother updates than pause()
+    end
+end
+
+clear stm32;
+disp('Connection Closed.');
